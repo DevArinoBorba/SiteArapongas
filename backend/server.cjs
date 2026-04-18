@@ -23,10 +23,16 @@ const memoryUpload = multer({
     limits: { fileSize: 50 * 1024 * 1024 } 
 });
 
-// 2. Disco para Imagens de Produtos
-const uploadDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir);
+// 2. Disco para Imagens de Produtos (Vercel usa /tmp por ser read-only)
+const isVercel = process.env.VERCEL === '1' || !!process.env.VERCEL;
+const uploadDir = isVercel ? '/tmp' : path.join(__dirname, 'uploads');
+
+try {
+    if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+    }
+} catch (err) {
+    console.warn('Alerta: Não foi possível criar pasta de uploads:', err.message);
 }
 
 const storage = multer.diskStorage({
