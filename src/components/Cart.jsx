@@ -66,7 +66,8 @@ export default function Cart({ isOpen, onClose, cartItems, onUpdateQuantity, onR
     let itemsText = cartItems.map(item => {
       const usedClubPrice = isMember && item.club_price;
       const finalPrice = usedClubPrice ? item.club_price : item.price;
-      return `📦 ${item.quantity}x *${item.name}* ${usedClubPrice ? '(Preço Clube)' : ''} - R$ ${(finalPrice * item.quantity).toFixed(2)}`;
+      const barcodeText = item.barcode ? ` [${item.barcode}]` : '';
+      return `📦 ${item.quantity}x *${item.name}*${barcodeText} ${usedClubPrice ? '(Preço Clube)' : ''} - R$ ${(finalPrice * item.quantity).toFixed(2)}`;
     }).join('%0A');
     
     let message = `🛒 *NOVO PEDIDO - ARAPONGAS*%0A%0A`;

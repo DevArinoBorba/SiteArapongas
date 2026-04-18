@@ -5,7 +5,7 @@ const xlsx = require('xlsx');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const db = require('./database.cjs');
+const supabase = require('./supabase.cjs');
 
 const app = express();
 const PORT = 3001;
@@ -44,95 +44,85 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use('/uploads', express.static(uploadDir));
 
 // 1. GET - Buscar produtos (Com Paginação Forçada e Busca)
-app.get('/api/products', (req, res) => {
+app.get('/api/products', async (req, res) => {
     const page = parseInt(req.query.page) || 1;
-    let limit = parseInt(req.query.limit) || 50; // Default 50
-    if (limit > 100) limit = 100; // Segurança Máxima: Nunca mais de 100
+    let limit = parseInt(req.query.limit) || 50;
+    if (limit > 100) limit = 100;
     
-    const category = req.query.category || '';
+    const categoryQuery = req.query.category || '';
     const search = req.query.search || '';
     const offset = (page - 1) * limit;
 
-    let query = 'SELECT * FROM products';
-    let countQuery = 'SELECT COUNT(*) as total FROM products';
-    let categoryQuery = 'SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != ""';
-    let params = [];
-    let countParams = [];
-    let filters = [];
+    try {
+        let query = supabase.from('products').select('*', { count: 'exact' });
 
-    if (search) {
-        filters.push(`(name LIKE ? OR barcode LIKE ? OR brand LIKE ?)`);
-        const searchParam = `%${search}%`;
-        params.push(searchParam, searchParam, searchParam);
-        countParams.push(searchParam, searchParam, searchParam);
-    }
+        if (search) {
+            query = query.or(`name.ilike.%${search}%,barcode.ilike.%${search}%,brand.ilike.%${search}%`);
+        }
 
-    if (category) {
-        filters.push(`category = ?`);
-        params.push(category);
-        countParams.push(category);
-    }
+        if (categoryQuery) {
+            query = query.eq('category', categoryQuery);
+        }
 
-    if (filters.length > 0) {
-        const filterStr = ' WHERE ' + filters.join(' AND ');
-        query += filterStr;
-        countQuery += filterStr;
-    }
+        const { data, count, error } = await query
+            .order('id', { ascending: false })
+            .range(offset, offset + limit - 1);
 
-    query += ' ORDER BY id DESC LIMIT ? OFFSET ?';
-    params.push(limit, offset);
+        if (error) throw error;
 
-    // Executar Queries
-    db.get(countQuery, countParams, (err, countRow) => {
-        if (err) return res.status(500).json({ error: err.message });
+        // Buscar Categorias Únicas
+        const { data: catData, error: catError } = await supabase
+            .from('products')
+            .select('category')
+            .not('category', 'is', null)
+            .neq('category', '');
         
-        db.all(query, params, (err, rows) => {
-            if (err) return res.status(500).json({ error: err.message });
-            
-            // Buscar Categorias para o menu (Pode ser cacheado no futuro)
-            db.all(categoryQuery, [], (err, catRows) => {
-                const categories = catRows ? catRows.map(c => c.category) : [];
-                res.json({ 
-                    message: 'success', 
-                    data: rows, 
-                    total: countRow.total,
-                    categories: categories,
-                    page,
-                    limit
-                });
-            });
+        if (catError) throw catError;
+        
+        const categories = [...new Set(catData.map(c => c.category))];
+
+        res.json({ 
+            message: 'success', 
+            data: data, 
+            total: count,
+            categories: categories,
+            page,
+            limit
         });
-    });
+    } catch (err) {
+        console.error('Erro ao buscar produtos:', err.message);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // 2. POST - Adicionar via ERP comum
-app.post('/api/products', (req, res) => {
+app.post('/api/products', async (req, res) => {
     const { name, brand, price, club_price, unit, image, barcode, category, stock } = req.body;
     if (!name || !price) return res.status(400).json({ error: 'Nome e preço são obrigatórios' });
 
-    const sql = 'INSERT INTO products (name, brand, price, club_price, unit, image, barcode, category, stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
-    db.run(sql, [name, brand, price, club_price || null, unit, image, barcode, category, stock || 0], function (err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: 'Produto adicionado com sucesso', data: { id: this.lastID, name } });
-    });
+    try {
+        const { data, error } = await supabase
+            .from('products')
+            .insert([{ name, brand, price, club_price: club_price || null, unit, image, barcode, category, stock: stock || 0 }])
+            .select();
+
+        if (error) throw error;
+        res.json({ message: 'Produto adicionado com sucesso', data: data[0] });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // 3. POST - Upload Inteligente de Excel (Otimizado para Massa)
 app.post('/api/upload-excel', memoryUpload.single('excel_file'), async (req, res) => {
     console.log('--- Requisição de Upload Recebida ---');
-    if (!req.file) {
-        console.error('Erro: Nenhum arquivo na requisição.');
-        return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
-    }
-    console.log(`Arquivo recebido: ${req.file.originalname} (${req.file.size} bytes)`);
+    if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
 
     try {
-        console.log('Lendo buffer com XLSX...');
         const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
         const sheetName = workbook.SheetNames[0];
         const data = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: null });
 
-        let successCount = 0;
         let nameIdx = -1, barcodeIdx = -1, priceIdx = -1, categoryIdx = -1, stockIdx = -1;
 
         // 1. Identificar Cabeçalhos
@@ -150,269 +140,399 @@ app.post('/api/upload-excel', memoryUpload.single('excel_file'), async (req, res
             if (nameIdx !== -1) break;
         }
 
-        if (nameIdx === -1) {
-            nameIdx = 1; // Fallback comum
-            barcodeIdx = 0;
+        if (nameIdx === -1) { nameIdx = 1; barcodeIdx = 0; }
+
+        const productsToInsert = [];
+        for (let i = 0; i < data.length; i++) {
+            const row = data[i];
+            if (!row || !row[nameIdx] || String(row[nameIdx]).toLowerCase().includes('descrição')) continue;
+
+            const name = String(row[nameIdx]).trim();
+            const barcode = barcodeIdx !== -1 ? (row[barcodeIdx] ? String(row[barcodeIdx]).trim() : '') : '';
+            const priceStr = priceIdx !== -1 ? row[priceIdx] : 0;
+            const price = parseFloat(String(priceStr).replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
+            const category = categoryIdx !== -1 ? (row[categoryIdx] || '') : '';
+            const stock = stockIdx !== -1 ? (parseInt(row[stockIdx]) || 0) : 0;
+            
+            productsToInsert.push({
+                name,
+                brand: '',
+                price,
+                club_price: null,
+                unit: 'un',
+                image: 'https://images.unsplash.com/photo-1542838132-92c53300491e?w=400&q=80',
+                barcode,
+                category,
+                stock
+            });
         }
 
-        console.log(`Iniciando importação de ${data.length} linhas...`);
+        // Inserção em Massa no Supabase (Otimizado)
+        // Dividir em chunks se necessário (Supabase aguenta bem até uns milhares, mas por segurança...)
+        const { error } = await supabase.from('products').insert(productsToInsert);
+        if (error) throw error;
 
-        // 2. Inserção em Massa via Transação (Turbo Mode)
-        db.serialize(() => {
-            db.run("BEGIN TRANSACTION");
-            
-            const stmt = db.prepare('INSERT INTO products (name, brand, price, club_price, unit, image, barcode, category, stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
-            
-            for (let i = 0; i < data.length; i++) {
-                const row = data[i];
-                if (!row || !row[nameIdx] || String(row[nameIdx]).toLowerCase().includes('descrição')) continue;
-
-                const name = String(row[nameIdx]).trim();
-                const barcode = barcodeIdx !== -1 ? (row[barcodeIdx] ? String(row[barcodeIdx]).trim() : '') : '';
-                const priceStr = priceIdx !== -1 ? row[priceIdx] : 0;
-                const price = parseFloat(String(priceStr).replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
-                const category = categoryIdx !== -1 ? (row[categoryIdx] || '') : '';
-                const stock = stockIdx !== -1 ? (parseInt(row[stockIdx]) || 0) : 0;
-                const imageUrl = 'https://images.unsplash.com/photo-1542838132-92c53300491e?w=400&q=80'; // Placeholder rápido
-
-                stmt.run([name, '', price, null, 'un', imageUrl, barcode, category, stock], (err) => {
-                    if (!err) successCount++;
-                });
-            }
-
-            stmt.finalize();
-            db.run("COMMIT", (err) => {
-                if (err) {
-                    console.error('Erro ao commitar transação:', err);
-                    return res.status(500).json({ error: 'Erro ao salvar no banco.' });
-                }
-                console.log(`Sucesso! ${successCount} produtos importados.`);
-                res.json({
-                    message: `Planilha processada com sucesso! ${successCount} produtos importados em tempo recorde.`,
-                    count: successCount
-                });
-            });
-        });
-        
+        res.json({ message: `Planilha processada com sucesso! ${productsToInsert.length} produtos importados.` });
     } catch (error) {
          console.error('Erro crítico importação:', error);
          res.status(500).json({ error: 'Erro ao processar as linhas do arquivo Excel.', details: error.message });
     }
 });
 
-// NEW: 4. POST - Upload de imagem para um produto específico
-app.post('/api/products/:id/image', diskUpload.single('image'), (req, res) => {
+// 4. POST - Upload de imagem para um produto específico
+app.post('/api/products/:id/image', diskUpload.single('image'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'Nenhuma imagem enviada.' });
     
-    const imageUrl = `http://localhost:3001/uploads/${req.file.filename}`;
+    const protocol = req.headers['x-forwarded-proto'] || 'http';
+    const host = req.headers['host'];
+    const imageUrl = `${protocol}://${host}/uploads/${req.file.filename}`;
     const productId = req.params.id;
 
-    db.run('UPDATE products SET image = ? WHERE id = ?', [imageUrl, productId], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
+    try {
+        const { error } = await supabase
+            .from('products')
+            .update({ image: imageUrl })
+            .eq('id', productId);
+
+        if (error) throw error;
         res.json({ message: 'Imagem atualizada com sucesso!', imageUrl });
-    });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // NEW: 5. POST - Sincronização automática via Código de Barras
+// --- INTEGRAÇÃO SIMPLUS API V4 ---
+let simplusToken = null;
+let tokenExpiry = null;
+
+async function getSimplusToken() {
+    const email = process.env.SIMPLUS_EMAIL;
+    const password = process.env.SIMPLUS_PASSWORD;
+    
+    if (!email || !password) {
+        console.warn('Simplus: Credenciais não configuradas (SIMPLUS_EMAIL/SIMPLUS_PASSWORD)');
+        return null;
+    }
+
+    // Se tiver token válido por mais 5 min, usa ele
+    if (simplusToken && tokenExpiry > Date.now() + 300000) return simplusToken;
+
+    try {
+        console.log('Simplus: Autenticando...');
+        const res = await axios.post('https://prod-api-v4.simplustec.com.br/jwt-login', { email, password }, { timeout: 5000 });
+        if (res.data && res.data.token) {
+            simplusToken = res.data.token;
+            tokenExpiry = Date.now() + 3600000; // Assume 1h de validade
+            return simplusToken;
+        }
+    } catch (err) {
+        console.error('Simplus: Erro no login:', err.message);
+    }
+    return null;
+}
+
 app.post('/api/products/:id/auto-sync-image', async (req, res) => {
     const productId = req.params.id;
     db.get('SELECT barcode, name FROM products WHERE id = ?', [productId], async (err, product) => {
         if (err || !product) return res.status(404).json({ error: 'Produto não encontrado' });
-        if (!product.barcode || product.barcode === 'N/A' || product.barcode === '0000000') {
+        
+        const barcode = product.barcode;
+        if (!barcode || barcode === 'N/A' || barcode === '0000000') {
             return res.status(400).json({ error: 'Código de barras inválido ou ausente para sincronização.' });
         }
 
         try {
-            const response = await axios.get(`https://world.openfoodfacts.org/api/v0/product/${product.barcode}.json`, { timeout: 5000 });
-            if (response.data && response.data.status === 1) {
-                const imageUrl = response.data.product.image_url || response.data.product.image_front_url;
-                if (imageUrl) {
-                    db.run('UPDATE products SET image = ? WHERE id = ?', [imageUrl, productId], function(err) {
-                        if (err) return res.status(500).json({ error: err.message });
-                        return res.json({ success: true, imageUrl, message: 'Foto sincronizada com sucesso!' });
+            console.log(`Tentando sincronizar: ${product.name} (${barcode})`);
+            let imageUrl = null;
+
+            // 1. TENTATIVA: SIMPLUS API V4 (Premium Brasil)
+            const token = await getSimplusToken();
+            if (token) {
+                try {
+                    console.log('Consultando Simplus...');
+                    const simplusRes = await axios.get(`https://prod-api-v4.simplustec.com.br/product?gtin=${barcode}`, {
+                        headers: { 'Authorization': `Bearer ${token}`, 'locale': 'pt_BR' },
+                        timeout: 5000
                     });
-                } else {
-                    return res.status(404).json({ error: 'Foto não encontrada na base online para este EAN.' });
+                    
+                    // Simplus retorna os dados do produto. Procuramos por imagens.
+                    if (simplusRes.data && simplusRes.data.assets && simplusRes.data.assets.length > 0) {
+                        // Filtra por imagens (assetType ou similar se existir, senão pega a primeira)
+                        const images = simplusRes.data.assets.filter(a => a.assetType === 'IMAGE' || a.mimeType?.includes('image'));
+                        if (images.length > 0) {
+                            imageUrl = images[0].url;
+                            console.log('Foto encontrada na Simplus!');
+                        }
+                    }
+                } catch (err) {
+                    console.log('Simplus: Produto não encontrado ou erro na API.', err.message);
                 }
+            }
+
+            // 2. TENTATIVA: Ean Pictures (Brasil) - Fallback
+            if (!imageUrl) {
+                try {
+                    console.log('Consultando Ean Pictures (Brasil)...');
+                    const eanRes = await axios.get(`http://www.eanpictures.com.br:9000/api/gtin/${barcode}`, { timeout: 4000 });
+                    if (eanRes.data) {
+                        const data = eanRes.data;
+                        if (Array.isArray(data) && data.length > 0) imageUrl = data[0].thumbnail || data[0].url || data[0].image;
+                        else if (data.thumbnail || data.url || data.image) imageUrl = data.thumbnail || data.url || data.image;
+                    }
+                } catch (err) {
+                    console.log('Ean Pictures falhou.');
+                }
+            }
+
+            // 3. TENTATIVA: Open Food Facts (Mundial) - Fallback final
+            if (!imageUrl) {
+                try {
+                    console.log('Consultando Open Food Facts...');
+                    const offRes = await axios.get(`https://world.openfoodfacts.org/api/v0/product/${barcode}.json`, { timeout: 4000 });
+                    if (offRes.data && offRes.data.status === 1) {
+                        imageUrl = offRes.data.product.image_url || offRes.data.product.image_front_url;
+                    }
+                } catch (err) {
+                    console.log('Open Food Facts falhou.');
+                }
+            }
+
+            if (imageUrl) {
+                db.run('UPDATE products SET image = ? WHERE id = ?', [imageUrl, productId], function(err) {
+                    if (err) return res.status(500).json({ error: err.message });
+                    return res.json({ success: true, imageUrl, message: 'Foto sincronizada com sucesso!' });
+                });
             } else {
-                return res.status(404).json({ error: 'Produto não localizado no Open Food Facts.' });
+                return res.status(404).json({ error: 'Nenhuma foto encontrada nas bases Simplus, Ean Pictures ou OFF.' });
             }
         } catch (error) {
-            return res.status(500).json({ error: 'Erro de conexão com API: ' + error.message });
+            console.error('Erro geral sincronização:', error.message);
+            return res.status(500).json({ error: 'Erro de conexão: ' + error.message });
         }
     });
 });
 
 // DELETE
-app.delete('/api/products/:id', (req, res) => {
-    db.run('DELETE FROM products WHERE id = ?', req.params.id, function (err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: 'Produto deletado', changes: this.changes });
-    });
+app.delete('/api/products/:id', async (req, res) => {
+    try {
+        const { error } = await supabase
+            .from('products')
+            .delete()
+            .eq('id', req.params.id);
+
+        if (error) throw error;
+        res.json({ message: 'Produto deletado' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // UPDATE PRODUTO (COMPLETO OU PARCIAL)
-app.put('/api/products/:id', (req, res) => {
+app.put('/api/products/:id', async (req, res) => {
     const { name, brand, price, club_price, unit, image, barcode, category, stock } = req.body;
     
-    // Debug Log para rastrear problemas de salvamento
-    console.log(`Atualizando produto ${req.params.id}:`, { name, price, club_price, stock });
+    const updateData = {};
+    if (name !== undefined) updateData.name = name;
+    if (brand !== undefined) updateData.brand = brand;
+    if (price !== undefined) updateData.price = price;
+    if (club_price !== undefined) updateData.club_price = club_price === "" ? null : club_price;
+    if (unit !== undefined) updateData.unit = unit;
+    if (image !== undefined) updateData.image = image;
+    if (barcode !== undefined) updateData.barcode = barcode;
+    if (category !== undefined) updateData.category = category;
+    if (stock !== undefined) updateData.stock = stock;
 
-    const sql = `
-        UPDATE products SET 
-            name = COALESCE(?, name), 
-            brand = COALESCE(?, brand), 
-            price = COALESCE(?, price), 
-            club_price = ?,
-            unit = COALESCE(?, unit), 
-            image = COALESCE(?, image), 
-            barcode = COALESCE(?, barcode), 
-            category = COALESCE(?, category), 
-            stock = COALESCE(?, stock) 
-        WHERE id = ?`;
-    
-    // Explicitamente converter undefined para null para o sqlite3 COALESCE
-    const params = [
-        name !== undefined ? name : null, 
-        brand !== undefined ? brand : null, 
-        price !== undefined ? price : null, 
-        club_price !== undefined ? (club_price === "" ? null : club_price) : null,
-        unit !== undefined ? unit : null, 
-        image !== undefined ? image : null, 
-        barcode !== undefined ? barcode : null, 
-        category !== undefined ? category : null, 
-        stock !== undefined ? stock : null, 
-        req.params.id
-    ];
+    try {
+        const { error } = await supabase
+            .from('products')
+            .update(updateData)
+            .eq('id', req.params.id);
 
-    db.run(sql, params, function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: 'Produto atualizado com sucesso!', changes: this.changes });
-    });
+        if (error) throw error;
+        res.json({ message: 'Produto atualizado com sucesso!' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // LOGIN ADMIN
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
     const { username, password } = req.body;
-    db.get('SELECT * FROM users WHERE username = ? AND password = ?', [username, password], (err, row) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (row) {
-            res.json({ success: true, message: 'Autenticado' });
-        } else {
-            res.status(401).json({ success: false, message: 'Credenciais inválidas' });
+    try {
+        const { data, error } = await supabase
+            .from('users')
+            .select('*')
+            .eq('username', username)
+            .eq('password', password)
+            .single();
+
+        if (error || !data) {
+            return res.status(401).json({ success: false, message: 'Credenciais inválidas' });
         }
-    });
+        res.json({ success: true, message: 'Autenticado' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// --- METRICAS & DASHBOARD (Ideia 2) ---
+// --- METRICAS & DASHBOARD ---
 
 // 1. Gravar Métrica
-app.post('/api/metrics', (req, res) => {
+app.post('/api/metrics', async (req, res) => {
     const { event_type, product_id, product_name } = req.body;
     if (!event_type) return res.status(400).json({ error: 'Tipo de evento obrigatório' });
 
-    db.run('INSERT INTO metrics (event_type, product_id, product_name) VALUES (?, ?, ?)', 
-        [event_type, product_id || null, product_name || null], 
-        (err) => {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ message: 'Métrica registrada' });
-        }
-    );
+    try {
+        const { error } = await supabase
+            .from('metrics')
+            .insert([{ event_type, product_id: product_id || null, product_name: product_name || null }]);
+
+        if (error) throw error;
+        res.json({ message: 'Métrica registrada' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // 2. Resumo de Métricas para o Dashboard
-app.get('/api/metrics/summary', (req, res) => {
-    // Total de Checkouts (WhatsApp)
-    const checkoutsQuery = "SELECT COUNT(*) as total FROM metrics WHERE event_type = 'whatsapp_checkout'";
-    
-    // Top Produtos Adicionados ao Carrinho
-    const topProductsQuery = `
-        SELECT product_name, COUNT(*) as count 
-        FROM metrics 
-        WHERE event_type = 'add_to_cart' 
-        GROUP BY product_name 
-        ORDER BY count DESC 
-        LIMIT 5`;
+app.get('/api/metrics/summary', async (req, res) => {
+    try {
+        // Total de Checkouts
+        const { count: totalCheckouts, error: err1 } = await supabase
+            .from('metrics')
+            .select('*', { count: 'exact', head: true })
+            .eq('event_type', 'whatsapp_checkout');
 
-    // Estatísticas por Categoria (Interação)
-    const categoryQuery = `
-        SELECT p.category, COUNT(m.id) as count 
-        FROM metrics m 
-        JOIN products p ON m.product_id = p.id 
-        GROUP BY p.category 
-        ORDER BY count DESC`;
+        if (err1) throw err1;
 
-    db.get(checkoutsQuery, (err, checkouts) => {
-        if (err) return res.status(500).json({ error: err.message });
+        // Top Produtos
+        const { data: topProducts, error: err2 } = await supabase
+            .rpc('get_top_products'); // Necessita de função RPC no Supabase (ou processar manualmente)
+
+        // Alternativa: Processamento manual (Simples para pequenos volumes)
+        const { data: allMetrics, error: err3 } = await supabase
+            .from('metrics')
+            .select('product_name')
+            .eq('event_type', 'add_to_cart');
         
-        db.all(topProductsQuery, (err, products) => {
-            if (err) return res.status(500).json({ error: err.message });
-            
-            db.all(categoryQuery, (err, categories) => {
-                if (err) return res.status(500).json({ error: err.message });
-                
-                res.json({
-                    totalCheckouts: checkouts.total,
-                    topProducts: products,
-                    categoryClicks: categories
-                });
-            });
+        if (err3) throw err3;
+
+        const productCounts = allMetrics.reduce((acc, current) => {
+            acc[current.product_name] = (acc[current.product_name] || 0) + 1;
+            return acc;
+        }, {});
+
+        const sortedProducts = Object.entries(productCounts)
+            .map(([product_name, count]) => ({ product_name, count }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 5);
+
+        // Engajamento por Setor
+        const { data: metricsWithProducts, error: err4 } = await supabase
+            .from('metrics')
+            .select('product_id, products(category)')
+            .not('product_id', 'is', null);
+
+        if (err4) throw err4;
+
+        const categoryCounts = metricsWithProducts.reduce((acc, current) => {
+            const cat = current.products?.category || 'Geral';
+            acc[cat] = (acc[cat] || 0) + 1;
+            return acc;
+        }, {});
+
+        const sortedCategories = Object.entries(categoryCounts)
+            .map(([category, count]) => ({ category, count }))
+            .sort((a, b) => b.count - a.count);
+
+        res.json({
+            totalCheckouts,
+            topProducts: sortedProducts,
+            categoryClicks: sortedCategories
         });
-    });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // --- GESTÃO DE MEMBROS DO CLUBE ---
 
-// 1. Listar todos os membros (Admin)
-app.get('/api/members', (req, res) => {
-    db.all('SELECT * FROM club_members ORDER BY created_at DESC', [], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: 'success', data: rows });
-    });
+app.get('/api/members', async (req, res) => {
+    try {
+        const { data, error } = await supabase
+            .from('club_members')
+            .select('*')
+            .order('created_at', { ascending: false });
+
+        if (error) throw error;
+        res.json({ message: 'success', data: data });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// 2. Adicionar novo membro (Público ou Admin)
-app.post('/api/members', (req, res) => {
+app.post('/api/members', async (req, res) => {
     const { cpf, name, birth_date, address, phone, preferred_store } = req.body;
     if (!cpf || !name) return res.status(400).json({ error: 'CPF e Nome são obrigatórios' });
 
-    const sql = `INSERT INTO club_members (cpf, name, birth_date, address, phone, preferred_store) 
-                 VALUES (?, ?, ?, ?, ?, ?)`;
-    
-    db.run(sql, [cpf, name, birth_date, address, phone, preferred_store], function(err) {
-        if (err) {
-            if (err.message.includes('UNIQUE')) return res.status(400).json({ error: 'Este CPF já está cadastrado no Clube.' });
-            return res.status(500).json({ error: err.message });
+    try {
+        const { data, error } = await supabase
+            .from('club_members')
+            .insert([{ cpf, name, birth_date, address, phone, preferred_store }])
+            .select();
+
+        if (error) {
+            if (error.code === '23505') return res.status(400).json({ error: 'Este CPF já está cadastrado no Clube.' });
+            throw error;
         }
-        res.json({ message: 'Bem-vindo ao Clube Arapongas! Cadastro realizado com sucesso.', id: this.lastID });
-    });
+        res.json({ message: 'Bem-vindo ao Clube! Cadastro realizado com sucesso.', id: data[0].id });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// 3. Deletar membro (Admin)
-app.delete('/api/members/:id', (req, res) => {
-    db.run('DELETE FROM club_members WHERE id = ?', req.params.id, function(err) {
-        if (err) return res.status(500).json({ error: err.message });
+app.delete('/api/members/:id', async (req, res) => {
+    try {
+        const { error } = await supabase
+            .from('club_members')
+            .delete()
+            .eq('id', req.params.id);
+
+        if (error) throw error;
         res.json({ message: 'Membro removido com sucesso!' });
-    });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// 4. VALIDAR CPF (Carrinho)
-app.post('/api/members/validate', (req, res) => {
+app.post('/api/members/validate', async (req, res) => {
     const { cpf } = req.body;
     if (!cpf) return res.status(400).json({ error: 'CPF não informado' });
 
-    // Limpar o CPF para busca (remover pontos e traço se vierem na máscara)
     const cleanCpf = cpf.replace(/\D/g, '');
     
-    // Busca flexível: encontra se o banco tem com pontos ou sem pontos
-    db.get('SELECT * FROM club_members WHERE REPLACE(REPLACE(cpf, ".", ""), "-", "") = ?', [cleanCpf], (err, row) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (row) {
-            res.json({ success: true, member: row });
+    try {
+        // Nota: O Supabase não tem REPLACE nativo na query sintaxe básica, 
+        // mas podemos usar .or ou processar no DB se necessário.
+        // Para simplificar, buscamos todos os membros e filtramos (se volume for pequeno)
+        // Ou implementamos um filtro ILIKE.
+        const { data, error } = await supabase
+            .from('club_members')
+            .select('*');
+        
+        if (error) throw error;
+
+        const member = data.find(m => m.cpf.replace(/\D/g, '') === cleanCpf);
+        
+        if (member) {
+            res.json({ success: true, member });
         } else {
             res.json({ success: false, message: 'CPF não localizado no Clube Arapongas.' });
         }
-    });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // --- FIM GESTÃO DE MEMBROS ---
@@ -430,6 +550,10 @@ app.use((err, req, res, next) => {
     res.status(500).json({ error: 'Erro interno no servidor', details: err.message });
 });
 
-app.listen(PORT, () => {
-    console.log(`Servidor rodando em http://localhost:${PORT}`);
-});
+module.exports = app;
+
+if (process.env.NODE_ENV !== 'production') {
+    app.listen(PORT, () => {
+        console.log(`Servidor rodando em http://localhost:${PORT}`);
+    });
+}

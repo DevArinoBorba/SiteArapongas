@@ -1,7 +1,11 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 
-const dbPath = path.resolve(__dirname, 'produtos.sqlite');
+const dbPath = process.env.VERCEL 
+    ? path.join(process.cwd(), 'backend', 'produtos.sqlite')
+    : path.resolve(__dirname, 'produtos.sqlite');
+
+console.log('Database path:', dbPath);
 
 const db = new sqlite3.Database(dbPath, (err) => {
     if (err) {

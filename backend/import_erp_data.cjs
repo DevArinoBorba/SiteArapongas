@@ -1,8 +1,4 @@
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
-
-const dbPath = path.resolve(__dirname, 'produtos.sqlite');
-const db = new sqlite3.Database(dbPath);
+const supabase = require('./supabase.cjs');
 
 const erpData = [
   { id: 1, name: "Bebida Lactea Uht Choc Latco 200ml", brand: "Latco", unit: "LT", barcode: "7898133290190", stock: 1, price: 15.90, club_price: 0.00, category: "Laticínios", image: "https://images.unsplash.com/photo-1550583724-b2692b85b150?w=400&q=80" },
@@ -19,30 +15,25 @@ const erpData = [
   { id: 30, name: "Cachaça 51 965ml", brand: "51", unit: "LT", barcode: "7896002100014", stock: 1, price: 18.99, club_price: 0.00, category: "Adega", image: "https://images.unsplash.com/photo-1569058242252-623df46b5025?w=400&q=80" }
 ];
 
-db.serialize(() => {
-  console.log('--- Iniciando Limpeza e Importação ERP ---');
+async function importData() {
+  console.log('--- Iniciando Limpeza e Importação ERP -> Supabase ---');
   
   // Limpar produtos antigos
-  db.run('DELETE FROM products', (err) => {
-    if (err) console.error('Erro ao limpar produtos:', err.message);
-    else console.log('Tabela de produtos limpa com sucesso.');
-  });
-
-  // Resetar autoincrement se necessário (SQLite)
-  db.run("DELETE FROM sqlite_sequence WHERE name='products'");
+  const { error: deleteError } = await supabase.from('products').delete().neq('id', 0);
+  if (deleteError) {
+      console.error('Erro ao limpar produtos:', deleteError.message);
+      return;
+  }
+  console.log('Tabela de produtos limpa com sucesso.');
 
   // Inserir novos produtos
-  const stmt = db.prepare('INSERT INTO products (id, name, brand, price, club_price, unit, image, barcode, category, stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  const { data, error } = await supabase.from('products').insert(erpData);
   
-  erpData.forEach(p => {
-    stmt.run([p.id, p.name, p.brand, p.price, p.club_price, p.unit, p.image, p.barcode, p.category, p.stock], (err) => {
-      if (err) console.error(`Erro ao inserir ${p.name}:`, err.message);
-      else console.log(`Produto inserido: ${p.name}`);
-    });
-  });
+  if (error) {
+    console.error('Erro na importação:', error.message);
+  } else {
+    console.log(`--- Importação Concluída: ${erpData.length} produtos inseridos ---`);
+  }
+}
 
-  stmt.finalize(() => {
-    console.log('--- Importação Concluída ---');
-    db.close();
-  });
-});
+importData().catch(err => console.error(err));
