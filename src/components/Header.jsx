@@ -188,23 +188,16 @@ export default function Header({ cartItemCount, onOpenCart, searchQuery, setSear
       </div>
 
       {/* Andar 3: Navigation */}
-      <nav style={{ backgroundColor: 'rgba(0,0,0,0.1)', padding: '0.5rem 0', color: 'var(--bg-color)' }}>
-        <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
+      <nav style={{ backgroundColor: 'rgba(0,0,0,0.1)', padding: '0.6rem 0', color: 'var(--bg-color)', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+        <div className="container" style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center' }}>
+          <div></div> {/* Spacer para centralização perfeita */}
+          <div style={{ display: 'flex', alignItems: 'center' }}>
             <ul className="nav-links" style={{ display: 'flex', gap: '2rem', listStyle: 'none', margin: 0, padding: 0 }}>
-              <li><a href="#" style={{ color: 'var(--bg-color)', textDecoration: 'none', fontWeight: '500' }}>Grupo de Ofertas</a></li>
+              <li><a href="#" className="nav-btn">Grupo de Ofertas</a></li>
               <li style={{ position: 'relative' }}>
                 <button 
                   onClick={() => setIsStoresOpen(!isStoresOpen)}
-                  style={{ 
-                    background: 'none', 
-                    border: 'none', 
-                    color: 'var(--bg-color)', 
-                    textDecoration: 'none', 
-                    fontWeight: '500', 
-                    cursor: 'pointer',
-                    fontSize: 'inherit'
-                  }}
+                  className="nav-btn"
                 >
                   Nossas Lojas
                 </button>
@@ -283,11 +276,11 @@ export default function Header({ cartItemCount, onOpenCart, searchQuery, setSear
                   </div>
                 )}
               </li>
-              <li><a href="#" style={{ color: 'var(--bg-color)', textDecoration: 'none', fontWeight: '500' }}>Clube de Vantagens</a></li>
+              <li><a href="/clube" className="nav-btn">Clube de Vantagens</a></li>
             </ul>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', justifyContent: 'flex-end' }}>
             <div style={{ position: 'relative' }}>
               <button 
                 onClick={() => setIsZipOpen(!isZipOpen)}

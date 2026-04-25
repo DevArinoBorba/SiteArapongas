@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import StoreFront from './pages/StoreFront';
 import AdminPanel from './pages/AdminPanel';
 import ClubRegistration from './pages/ClubRegistration';
+import ReloadPrompt from './components/ReloadPrompt';
 import './App.css';
 
 function App() {
@@ -12,6 +13,7 @@ function App() {
         <Route path="/paineldecontrole" element={<AdminPanel />} />
         <Route path="/clube" element={<ClubRegistration />} />
       </Routes>
+      <ReloadPrompt />
     </BrowserRouter>
   );
 }

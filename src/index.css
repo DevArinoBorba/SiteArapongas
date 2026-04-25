@@ -127,3 +127,39 @@ h1, h2, h3, h4 {
 .fadeIn {
   animation: fadeIn 0.3s ease-in-out;
 }
+
+/* Uniform Rounded Nav Buttons - Fixed Height & Resets */
+.nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 42px; /* Altura fixa garantida */
+  min-width: 200px; /* Largura uniforme garantida */
+  padding: 0 1.5rem;
+  border-radius: 50px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: var(--bg-color) !important; /* Forçar cor */
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.85rem;
+  letter-spacing: 0.03em;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  background: rgba(255, 255, 255, 0.05);
+  white-space: nowrap;
+  cursor: pointer;
+  box-sizing: border-box;
+  font-family: inherit;
+  margin: 0;
+  outline: none;
+}
+
+.nav-btn:hover {
+  transform: scale(1.05);
+  border-color: var(--accent-color);
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+}
+
+
+
+

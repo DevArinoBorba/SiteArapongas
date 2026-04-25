@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Temporary and Build folders
+dev-dist
+scratch
+backend/*.sqlite
+!backend/produtos.sqlite.template
+

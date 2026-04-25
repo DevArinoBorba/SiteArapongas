@@ -5,7 +5,8 @@ const xlsx = require('xlsx');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const supabase = require('./supabase.cjs');
+const supabase = null; // Desativado
+const db = require('./database.cjs');
 
 const app = express();
 const PORT = 3001;
@@ -49,8 +50,8 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use('/uploads', express.static(uploadDir));
 
-// 1. GET - Buscar produtos (Com Paginação Forçada e Busca)
-app.get('/api/products', async (req, res) => {
+// 1. GET - Buscar produtos (SQLite)
+app.get('/api/products', (req, res) => {
     const page = parseInt(req.query.page) || 1;
     let limit = parseInt(req.query.limit) || 50;
     if (limit > 100) limit = 100;
@@ -59,68 +60,65 @@ app.get('/api/products', async (req, res) => {
     const search = req.query.search || '';
     const offset = (page - 1) * limit;
 
-    try {
-        let query = supabase.from('products').select('*', { count: 'exact' });
+    let countQuery = 'SELECT COUNT(*) as count FROM products WHERE 1=1';
+    let dataQuery = 'SELECT * FROM products WHERE 1=1';
+    let params = [];
 
-        if (search) {
-            query = query.or(`name.ilike.%${search}%,barcode.ilike.%${search}%,brand.ilike.%${search}%`);
-        }
-
-        if (categoryQuery) {
-            query = query.eq('category', categoryQuery);
-        }
-
-        const { data, count, error } = await query
-            .order('id', { ascending: false })
-            .range(offset, offset + limit - 1);
-
-        if (error) throw error;
-
-        // Buscar Categorias Únicas
-        const { data: catData, error: catError } = await supabase
-            .from('products')
-            .select('category')
-            .not('category', 'is', null)
-            .neq('category', '');
-        
-        if (catError) throw catError;
-        
-        const categories = [...new Set(catData.map(c => c.category))];
-
-        res.json({ 
-            message: 'success', 
-            data: data, 
-            total: count,
-            categories: categories,
-            page,
-            limit
-        });
-    } catch (err) {
-        console.error('Erro ao buscar produtos:', err.message);
-        res.status(500).json({ error: err.message });
+    if (search) {
+        const searchFilter = ' AND (name LIKE ? OR barcode LIKE ? OR brand LIKE ?)';
+        countQuery += searchFilter;
+        dataQuery += searchFilter;
+        params.push(`%${search}%`, `%${search}%`, `%${search}%`);
     }
+
+    if (categoryQuery) {
+        countQuery += ' AND category = ?';
+        dataQuery += ' AND category = ?';
+        params.push(categoryQuery);
+    }
+
+    dataQuery += ' ORDER BY id DESC LIMIT ? OFFSET ?';
+    let dataParams = [...params, limit, offset];
+
+    db.get(countQuery, params, (err, countRow) => {
+        if (err) return res.status(500).json({ error: err.message });
+
+        db.all(dataQuery, dataParams, (err, rows) => {
+            if (err) return res.status(500).json({ error: err.message });
+
+            // Buscar Categorias Únicas
+            db.all('SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != ""', [], (err, catRows) => {
+                const categories = catRows ? catRows.map(c => c.category) : [];
+                
+                res.json({ 
+                    message: 'success', 
+                    data: rows, 
+                    total: countRow.count,
+                    categories: categories,
+                    page,
+                    limit
+                });
+            });
+        });
+    });
 });
 
-// 2. POST - Adicionar via ERP comum
-app.post('/api/products', async (req, res) => {
+// 2. POST - Adicionar via ERP comum (SQLite)
+app.post('/api/products', (req, res) => {
     const { name, brand, price, club_price, unit, image, barcode, category, stock } = req.body;
     if (!name || !price) return res.status(400).json({ error: 'Nome e preço são obrigatórios' });
 
-    try {
-        const { data, error } = await supabase
-            .from('products')
-            .insert([{ name, brand, price, club_price: club_price || null, unit, image, barcode, category, stock: stock || 0 }])
-            .select();
+    const sql = 'INSERT INTO products (name, brand, price, club_price, unit, image, barcode, category, stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
+    const params = [name, brand, price, club_price || null, unit, image, barcode, category, stock || 0];
 
-        if (error) throw error;
-        res.json({ message: 'Produto adicionado com sucesso', data: data[0] });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    db.run(sql, params, function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: 'Produto adicionado com sucesso', id: this.lastID });
+    });
 });
 
-// 3. POST - Upload Inteligente de Excel (Otimizado para Massa)
-app.post('/api/upload-excel', memoryUpload.single('excel_file'), async (req, res) => {
+// 3. POST - Upload Inteligente de Excel (SQLite)
+app.post('/api/upload-excel', memoryUpload.single('excel_file'), (req, res) => {
     console.log('--- Requisição de Upload Recebida ---');
     if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
 
@@ -131,7 +129,6 @@ app.post('/api/upload-excel', memoryUpload.single('excel_file'), async (req, res
 
         let nameIdx = -1, barcodeIdx = -1, priceIdx = -1, categoryIdx = -1, stockIdx = -1;
 
-        // 1. Identificar Cabeçalhos
         for (let j = 0; j < Math.min(data.length, 20); j++) {
             const row = data[j];
             if (!Array.isArray(row)) continue;
@@ -160,51 +157,39 @@ app.post('/api/upload-excel', memoryUpload.single('excel_file'), async (req, res
             const category = categoryIdx !== -1 ? (row[categoryIdx] || '') : '';
             const stock = stockIdx !== -1 ? (parseInt(row[stockIdx]) || 0) : 0;
             
-            productsToInsert.push({
-                name,
-                brand: '',
-                price,
-                club_price: null,
-                unit: 'un',
-                image: 'https://images.unsplash.com/photo-1542838132-92c53300491e?w=400&q=80',
-                barcode,
-                category,
-                stock
-            });
+            productsToInsert.push([name, '', price, null, 'un', 'https://images.unsplash.com/photo-1542838132-92c53300491e?w=400&q=80', barcode, category, stock]);
         }
 
-        // Inserção em Massa no Supabase (Otimizado)
-        // Dividir em chunks se necessário (Supabase aguenta bem até uns milhares, mas por segurança...)
-        const { error } = await supabase.from('products').insert(productsToInsert);
-        if (error) throw error;
-
-        res.json({ message: `Planilha processada com sucesso! ${productsToInsert.length} produtos importados.` });
+        const sql = 'INSERT INTO products (name, brand, price, club_price, unit, image, barcode, category, stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
+        db.serialize(() => {
+            const stmt = db.prepare(sql);
+            for (const p of productsToInsert) {
+                stmt.run(p);
+            }
+            stmt.finalize((err) => {
+                if (err) return res.status(500).json({ error: err.message });
+                res.json({ message: `Planilha processada com sucesso! ${productsToInsert.length} produtos importados.` });
+            });
+        });
     } catch (error) {
          console.error('Erro crítico importação:', error);
          res.status(500).json({ error: 'Erro ao processar as linhas do arquivo Excel.', details: error.message });
     }
 });
 
-// 4. POST - Upload de imagem para um produto específico
-app.post('/api/products/:id/image', diskUpload.single('image'), async (req, res) => {
-    if (!req.file) return res.status(400).json({ error: 'Nenhuma imagem enviada.' });
+// 4. POST - Upload de imagem para um produto específico (SQLite)
+app.post('/api/products/:id/image', diskUpload.single('image'), (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'Nenhum imagem enviada.' });
     
     const protocol = req.headers['x-forwarded-proto'] || 'http';
     const host = req.headers['host'];
     const imageUrl = `${protocol}://${host}/uploads/${req.file.filename}`;
     const productId = req.params.id;
 
-    try {
-        const { error } = await supabase
-            .from('products')
-            .update({ image: imageUrl })
-            .eq('id', productId);
-
-        if (error) throw error;
+    db.run('UPDATE products SET image = ? WHERE id = ?', [imageUrl, productId], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
         res.json({ message: 'Imagem atualizada com sucesso!', imageUrl });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    });
 });
 
 // NEW: 5. POST - Sincronização automática via Código de Barras
@@ -319,226 +304,135 @@ app.post('/api/products/:id/auto-sync-image', async (req, res) => {
     });
 });
 
-// DELETE
-app.delete('/api/products/:id', async (req, res) => {
-    try {
-        const { error } = await supabase
-            .from('products')
-            .delete()
-            .eq('id', req.params.id);
-
-        if (error) throw error;
+// DELETE (SQLite)
+app.delete('/api/products/:id', (req, res) => {
+    db.run('DELETE FROM products WHERE id = ?', [req.params.id], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
         res.json({ message: 'Produto deletado' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    });
 });
 
-// UPDATE PRODUTO (COMPLETO OU PARCIAL)
-app.put('/api/products/:id', async (req, res) => {
+// UPDATE PRODUTO (SQLite)
+app.put('/api/products/:id', (req, res) => {
     const { name, brand, price, club_price, unit, image, barcode, category, stock } = req.body;
     
-    const updateData = {};
-    if (name !== undefined) updateData.name = name;
-    if (brand !== undefined) updateData.brand = brand;
-    if (price !== undefined) updateData.price = price;
-    if (club_price !== undefined) updateData.club_price = club_price === "" ? null : club_price;
-    if (unit !== undefined) updateData.unit = unit;
-    if (image !== undefined) updateData.image = image;
-    if (barcode !== undefined) updateData.barcode = barcode;
-    if (category !== undefined) updateData.category = category;
-    if (stock !== undefined) updateData.stock = stock;
+    const fields = [];
+    const params = [];
 
-    try {
-        const { error } = await supabase
-            .from('products')
-            .update(updateData)
-            .eq('id', req.params.id);
+    if (name !== undefined) { fields.push('name = ?'); params.push(name); }
+    if (brand !== undefined) { fields.push('brand = ?'); params.push(brand); }
+    if (price !== undefined) { fields.push('price = ?'); params.push(price); }
+    if (club_price !== undefined) { fields.push('club_price = ?'); params.push(club_price === "" ? null : club_price); }
+    if (unit !== undefined) { fields.push('unit = ?'); params.push(unit); }
+    if (image !== undefined) { fields.push('image = ?'); params.push(image); }
+    if (barcode !== undefined) { fields.push('barcode = ?'); params.push(barcode); }
+    if (category !== undefined) { fields.push('category = ?'); params.push(category); }
+    if (stock !== undefined) { fields.push('stock = ?'); params.push(stock); }
 
-        if (error) throw error;
+    if (fields.length === 0) return res.status(400).json({ error: 'Nenhum campo para atualizar' });
+
+    params.push(req.params.id);
+    const sql = `UPDATE products SET ${fields.join(', ')} WHERE id = ?`;
+
+    db.run(sql, params, (err) => {
+        if (err) return res.status(500).json({ error: err.message });
         res.json({ message: 'Produto atualizado com sucesso!' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    });
 });
 
-// LOGIN ADMIN
-app.post('/api/login', async (req, res) => {
+// LOGIN ADMIN (SQLite)
+app.post('/api/login', (req, res) => {
     const { username, password } = req.body;
-    try {
-        const { data, error } = await supabase
-            .from('users')
-            .select('*')
-            .eq('username', username)
-            .eq('password', password)
-            .single();
-
-        if (error || !data) {
-            return res.status(401).json({ success: false, message: 'Credenciais inválidas' });
-        }
+    db.get('SELECT * FROM users WHERE username = ? AND password = ?', [username, password], (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!row) return res.status(401).json({ success: false, message: 'Credenciais inválidas' });
         res.json({ success: true, message: 'Autenticado' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    });
 });
 
 // --- METRICAS & DASHBOARD ---
 
-// 1. Gravar Métrica
-app.post('/api/metrics', async (req, res) => {
+// 1. Gravar Métrica (SQLite)
+app.post('/api/metrics', (req, res) => {
     const { event_type, product_id, product_name } = req.body;
     if (!event_type) return res.status(400).json({ error: 'Tipo de evento obrigatório' });
 
-    try {
-        const { error } = await supabase
-            .from('metrics')
-            .insert([{ event_type, product_id: product_id || null, product_name: product_name || null }]);
-
-        if (error) throw error;
+    db.run('INSERT INTO metrics (event_type, product_id, product_name) VALUES (?, ?, ?)', [event_type, product_id || null, product_name || null], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
         res.json({ message: 'Métrica registrada' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    });
 });
 
-// 2. Resumo de Métricas para o Dashboard
-app.get('/api/metrics/summary', async (req, res) => {
-    try {
-        // Total de Checkouts
-        const { count: totalCheckouts, error: err1 } = await supabase
-            .from('metrics')
-            .select('*', { count: 'exact', head: true })
-            .eq('event_type', 'whatsapp_checkout');
+// 2. Resumo de Métricas (SQLite)
+app.get('/api/metrics/summary', (req, res) => {
+    db.get('SELECT COUNT(*) as totalCheckouts FROM metrics WHERE event_type = "whatsapp_checkout"', (err, checkoutRow) => {
+        if (err) return res.status(500).json({ error: err.message });
 
-        if (err1) throw err1;
+        db.all('SELECT product_name, COUNT(*) as count FROM metrics WHERE event_type = "add_to_cart" GROUP BY product_name ORDER BY count DESC LIMIT 5', (err, topProducts) => {
+            if (err) return res.status(500).json({ error: err.message });
 
-        // Top Produtos
-        const { data: topProducts, error: err2 } = await supabase
-            .rpc('get_top_products'); // Necessita de função RPC no Supabase (ou processar manualmente)
+            db.all('SELECT p.category, COUNT(*) as count FROM metrics m JOIN products p ON m.product_id = p.id GROUP BY p.category ORDER BY count DESC', (err, categoryClicks) => {
+                if (err) return res.status(500).json({ error: err.message });
 
-        // Alternativa: Processamento manual (Simples para pequenos volumes)
-        const { data: allMetrics, error: err3 } = await supabase
-            .from('metrics')
-            .select('product_name')
-            .eq('event_type', 'add_to_cart');
-        
-        if (err3) throw err3;
-
-        const productCounts = allMetrics.reduce((acc, current) => {
-            acc[current.product_name] = (acc[current.product_name] || 0) + 1;
-            return acc;
-        }, {});
-
-        const sortedProducts = Object.entries(productCounts)
-            .map(([product_name, count]) => ({ product_name, count }))
-            .sort((a, b) => b.count - a.count)
-            .slice(0, 5);
-
-        // Engajamento por Setor
-        const { data: metricsWithProducts, error: err4 } = await supabase
-            .from('metrics')
-            .select('product_id, products(category)')
-            .not('product_id', 'is', null);
-
-        if (err4) throw err4;
-
-        const categoryCounts = metricsWithProducts.reduce((acc, current) => {
-            const cat = current.products?.category || 'Geral';
-            acc[cat] = (acc[cat] || 0) + 1;
-            return acc;
-        }, {});
-
-        const sortedCategories = Object.entries(categoryCounts)
-            .map(([category, count]) => ({ category, count }))
-            .sort((a, b) => b.count - a.count);
-
-        res.json({
-            totalCheckouts,
-            topProducts: sortedProducts,
-            categoryClicks: sortedCategories
+                res.json({
+                    totalCheckouts: checkoutRow.totalCheckouts,
+                    topProducts,
+                    categoryClicks
+                });
+            });
         });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    });
 });
 
-// --- GESTÃO DE MEMBROS DO CLUBE ---
+// --- GESTÃO DE MEMBROS DO CLUBE (SQLite) ---
 
-app.get('/api/members', async (req, res) => {
-    try {
-        const { data, error } = await supabase
-            .from('club_members')
-            .select('*')
-            .order('created_at', { ascending: false });
-
-        if (error) throw error;
-        res.json({ message: 'success', data: data });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+app.get('/api/members', (req, res) => {
+    db.all('SELECT * FROM club_members ORDER BY created_at DESC', (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: 'success', data: rows });
+    });
 });
 
-app.post('/api/members', async (req, res) => {
+app.post('/api/members', (req, res) => {
     const { cpf, name, birth_date, address, phone, preferred_store } = req.body;
     if (!cpf || !name) return res.status(400).json({ error: 'CPF e Nome são obrigatórios' });
 
-    try {
-        const { data, error } = await supabase
-            .from('club_members')
-            .insert([{ cpf, name, birth_date, address, phone, preferred_store }])
-            .select();
+    const sql = 'INSERT INTO club_members (cpf, name, birth_date, address, phone, preferred_store) VALUES (?, ?, ?, ?, ?, ?)';
+    const params = [cpf, name, birth_date, address, phone, preferred_store];
 
-        if (error) {
-            if (error.code === '23505') return res.status(400).json({ error: 'Este CPF já está cadastrado no Clube.' });
-            throw error;
+    db.run(sql, params, function(err) {
+        if (err) {
+            if (err.message.includes('UNIQUE')) return res.status(400).json({ error: 'Este CPF já está cadastrado no Clube.' });
+            return res.status(500).json({ error: err.message });
         }
-        res.json({ message: 'Bem-vindo ao Clube! Cadastro realizado com sucesso.', id: data[0].id });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+        res.json({ message: 'Bem-vindo ao Clube! Cadastro realizado com sucesso.', id: this.lastID });
+    });
 });
 
-app.delete('/api/members/:id', async (req, res) => {
-    try {
-        const { error } = await supabase
-            .from('club_members')
-            .delete()
-            .eq('id', req.params.id);
-
-        if (error) throw error;
+app.delete('/api/members/:id', (req, res) => {
+    db.run('DELETE FROM club_members WHERE id = ?', [req.params.id], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
         res.json({ message: 'Membro removido com sucesso!' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    });
 });
 
-app.post('/api/members/validate', async (req, res) => {
+app.post('/api/members/validate', (req, res) => {
     const { cpf } = req.body;
     if (!cpf) return res.status(400).json({ error: 'CPF não informado' });
 
     const cleanCpf = cpf.replace(/\D/g, '');
     
-    try {
-        // Nota: O Supabase não tem REPLACE nativo na query sintaxe básica, 
-        // mas podemos usar .or ou processar no DB se necessário.
-        // Para simplificar, buscamos todos os membros e filtramos (se volume for pequeno)
-        // Ou implementamos um filtro ILIKE.
-        const { data, error } = await supabase
-            .from('club_members')
-            .select('*');
-        
-        if (error) throw error;
+    db.all('SELECT * FROM club_members', (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
 
-        const member = data.find(m => m.cpf.replace(/\D/g, '') === cleanCpf);
+        const member = rows.find(m => m.cpf.replace(/\D/g, '') === cleanCpf);
         
         if (member) {
             res.json({ success: true, member });
         } else {
             res.json({ success: false, message: 'CPF não localizado no Clube Arapongas.' });
         }
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    });
 });
 
 // --- FIM GESTÃO DE MEMBROS ---
