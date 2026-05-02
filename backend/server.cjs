@@ -60,8 +60,9 @@ app.get('/api/products', (req, res) => {
     const search = req.query.search || '';
     const offset = (page - 1) * limit;
 
-    let countQuery = 'SELECT COUNT(*) as count FROM products WHERE 1=1';
-    let dataQuery = 'SELECT * FROM products WHERE 1=1';
+    // Adiciona filtro para não exibir produtos com preço zerado ou estoque zerado
+    let countQuery = 'SELECT COUNT(*) as count FROM products WHERE price > 0 AND stock > 0';
+    let dataQuery = 'SELECT * FROM products WHERE price > 0 AND stock > 0';
     let params = [];
 
     if (search) {
@@ -87,7 +88,7 @@ app.get('/api/products', (req, res) => {
             if (err) return res.status(500).json({ error: err.message });
 
             // Buscar Categorias Únicas
-            db.all('SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != ""', [], (err, catRows) => {
+            db.all('SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != "" AND price > 0 AND stock > 0', [], (err, catRows) => {
                 const categories = catRows ? catRows.map(c => c.category) : [];
                 
                 res.json({ 

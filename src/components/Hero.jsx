@@ -73,22 +73,22 @@ export default function Hero() {
             />
             <div className="hero-content" style={{ position: 'relative', zIndex: 2 }}>
               {slide.isSpecial && (
-                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', backgroundColor: 'var(--accent-color)', color: 'black', padding: '0.4rem 1rem', borderRadius: '50px', marginBottom: '1rem', fontWeight: 'bold', fontSize: '0.9rem' }}>
-                  <Sparkles size={16} /> NOVIDADE NO ARAPONGAS
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', backgroundColor: 'var(--accent-color)', color: 'black', padding: '0.3rem 0.8rem', borderRadius: '50px', marginBottom: '0.8rem', fontWeight: 'bold', fontSize: 'clamp(0.7rem, 2vw, 0.9rem)' }}>
+                  <Sparkles size={14} /> NOVIDADE NO ARAPONGAS
                 </div>
               )}
-              <h2 style={{ color: slide.isSpecial ? 'white' : 'inherit' }}>{slide.title}</h2>
+              <h2 style={{ color: slide.isSpecial ? 'white' : 'inherit', fontSize: 'clamp(1.5rem, 5vw, 2.5rem)', lineHeight: '1.2' }}>{slide.title}</h2>
               <p style={{ 
-                marginBottom: '1.5rem', 
-                fontSize: '1.1rem', 
+                marginBottom: '1.2rem', 
+                fontSize: 'clamp(0.9rem, 3vw, 1.1rem)', 
                 color: slide.isSpecial ? 'rgba(255,255,255,0.9)' : 'var(--text-muted)' 
               }}>
                 {slide.subtitle}
               </p>
               <button 
-                className={`btn ${slide.isSpecial ? 'btn-primary' : 'btn-primary'}`} 
+                className="btn btn-primary" 
                 onClick={slide.btnAction}
-                style={{ scale: slide.isSpecial ? '1.1' : '1' }}
+                style={{ scale: slide.isSpecial ? '1.05' : '1', padding: '0.6rem 1.5rem' }}
               >
                 {slide.buttonText}
               </button>
@@ -122,7 +122,7 @@ export default function Hero() {
         </div>
       </div>
 
-      <div className="hero-utilities">
+      <div className="hero-utilities hide-mobile">
         <button className="utility-item">
           <Store size={20} /> Retire na Loja
         </button>

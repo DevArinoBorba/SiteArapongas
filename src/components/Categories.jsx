@@ -11,7 +11,11 @@ import {
   Hand, 
   Package,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Tag,
+  Home,
+  Dumbbell,
+  Heart
 } from 'lucide-react'; 
 
 export default function Categories({ categories, selectedCategory, onSelectCategory }) {
@@ -39,6 +43,10 @@ export default function Categories({ categories, selectedCategory, onSelectCateg
     'Adega': { Icon: Wine, color: '#fdf2f8' },
     'Limpeza': { Icon: Sparkles, color: '#f0f9ff' },
     'Higiene': { Icon: Hand, color: '#f5f3ff' },
+    'Cuidados Pessoal': { Icon: Heart, color: '#fce7f3' },
+    'Casa': { Icon: Home, color: '#ffedd5' },
+    'Fitness': { Icon: Dumbbell, color: '#dcfce7' },
+    'Ofertas': { Icon: Tag, color: '#fee2e2' }
   };
 
   return (
@@ -50,14 +58,14 @@ export default function Categories({ categories, selectedCategory, onSelectCateg
           <div style={{ display: 'flex', gap: '0.5rem' }}>
             <button 
               onClick={() => scroll('left')}
-              className="nav-btn"
+              className="carousel-nav-btn"
               style={{ padding: '0.4rem', borderRadius: '50%', border: '1px solid #e2e8f0', backgroundColor: 'white', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
             >
               <ChevronLeft size={18} />
             </button>
             <button 
               onClick={() => scroll('right')}
-              className="nav-btn"
+              className="carousel-nav-btn"
               style={{ padding: '0.4rem', borderRadius: '50%', border: '1px solid #e2e8f0', backgroundColor: 'white', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
             >
               <ChevronRight size={18} />
@@ -98,8 +106,8 @@ export default function Categories({ categories, selectedCategory, onSelectCateg
               transition: 'all 0.2s ease'
             }}
           >
-            <ShoppingBag size={18} color={!selectedCategory ? 'var(--primary-color)' : 'var(--accent-color)'} />
-            <span style={{ fontSize: '0.85rem', fontWeight: '600' }}>Tudo</span>
+            <Tag size={18} color={!selectedCategory ? 'var(--primary-color)' : 'var(--accent-color)'} />
+            <span style={{ fontSize: '0.85rem', fontWeight: '600' }}>Ofertas</span>
           </div>
 
           {categories.map((cat, index) => {
@@ -145,6 +153,10 @@ export default function Categories({ categories, selectedCategory, onSelectCateg
           border-color: var(--accent-color) !important;
         }
         .nav-btn:hover {
+          background-color: var(--accent-color) !important;
+          color: var(--primary-color);
+        }
+        .carousel-nav-btn:hover {
           background-color: var(--accent-color) !important;
           color: var(--primary-color);
         }

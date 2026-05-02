@@ -5,6 +5,7 @@ import Categories from '../components/Categories';
 import ProductCard from '../components/ProductCard';
 import ProductModal from '../components/ProductModal';
 import Cart from '../components/Cart';
+import ZipModal from '../components/ZipModal';
 
 export default function StoreFront() {
   const [products, setProducts] = useState([]);
@@ -23,6 +24,9 @@ export default function StoreFront() {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalProducts, setTotalProducts] = useState(0);
   const [serverCategories, setServerCategories] = useState([]);
+  const [selectedStore, setSelectedStore] = useState(() => {
+    return localStorage.getItem('arapongas_location') || null;
+  });
   const itemsPerPage = 32;
 
   useEffect(() => {
@@ -89,8 +93,9 @@ export default function StoreFront() {
 
   const cartItemCount = cartItems.reduce((acc, item) => acc + item.quantity, 0);
 
-  // Categorias do Servidor
-  const uniqueCategories = serverCategories.length > 0 ? serverCategories : ['Geral'];
+  // Categorias do Servidor + Categorias Fixas
+  const baseCategories = ['Cuidados Pessoal', 'Casa', 'Açougue', 'Fitness'];
+  const uniqueCategories = Array.from(new Set([...baseCategories, ...serverCategories]));
 
   // Paginação
   const totalPages = Math.ceil(totalProducts / itemsPerPage);
@@ -103,7 +108,10 @@ export default function StoreFront() {
         onOpenCart={() => setIsCartOpen(true)} 
         searchQuery={searchQuery}
         setSearchQuery={setSearchQuery}
+        selectedStore={selectedStore}
       />
+      
+      <ZipModal onLocationSelected={setSelectedStore} />
       
       <main>
         {toastMessage && (

@@ -18,7 +18,7 @@ export default function ProductModal({ product, onClose, onAddToCart }) {
 
   return (
     <div className="cart-overlay open" onClick={onClose} style={{ zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div className="cart-panel" onClick={e => e.stopPropagation()} style={{ position: 'relative', width: '90%', maxWidth: '900px', height: 'auto', maxHeight: '90vh', overflowY: 'auto', borderRadius: '16px', display: 'flex', flexDirection: 'row', flexWrap: 'wrap', transform: 'none', right: 'auto', top: 'auto', padding: 0 }}>
+      <div className="cart-panel product-modal-container" onClick={e => e.stopPropagation()} style={{ position: 'relative', width: '90%', maxWidth: '900px', height: 'auto', maxHeight: '95vh', overflowY: 'auto', borderRadius: '16px', display: 'flex', transform: 'none', right: 'auto', top: 'auto', padding: 0 }}>
         
         <button onClick={onClose} style={{ position: 'absolute', top: '15px', right: '15px', background: 'white', border: 'none', borderRadius: '50%', padding: '0.5rem', cursor: 'pointer', boxShadow: '0 2px 10px rgba(0,0,0,0.1)' }}>
           <X size={24} />
